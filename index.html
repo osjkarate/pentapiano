@@ -42,7 +42,7 @@ h1{font-size:1.15rem;white-space:nowrap}
   <div class="grp">
     <select id="mode"><option value="all">All 24</option><option value="maj">Major (12)</option><option value="min">Minor (12)</option></select>
     <select id="ord"><option value="4th" selected>4ths</option><option value="5th">5ths</option><option value="rnd">Shuffled</option></select>
-    <select id="dir"><option value="asc">Ascending ↑</option><option value="desc">Descending ↓</option><option value="mix">Mixed ↕</option></select>
+    <select id="dir"><option value="asc">Ascending ↑</option><option value="desc">Descending ↓</option><option value="rnd-asc">Random Asc 🔀↑</option><option value="rnd-desc">Random Desc 🔀↓</option></select>
     <span class="tag" id="tag"></span>
   </div>
   <div class="grp">
@@ -65,7 +65,7 @@ const SHARPS = "C,C♯,D,D♯,E,F,F♯,G,G♯,A,A♯,B".split(","),
       NOTES  = Uint8Array.of(0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0),
       PIANO_RATIO = 14 / 5.1;
 
-let deck = [], idx = 0, step = 0, lock = 0, streak = 0, tries = 0, hits = 0, clean = 1;
+let deck = new Array(), idx = 0, step = 0, lock = 0, streak = 0, tries = 0, hits = 0, clean = 1;
 
 function fitPiano(){
   const sw = stage.clientWidth, sh = stage.clientHeight;
@@ -77,11 +77,37 @@ function fitPiano(){
 }
 new ResizeObserver(fitPiano).observe(stage);
 
+function applyOrder(q, d){
+  let pcs = [...q.basePcs];
+  let deg = [...q.baseDeg];
+  let names = [...q.baseNames];
+  let arrow = "↑";
+
+  if(d === "rnd-asc" || d === "rnd-desc"){
+    const isDesc = d === "rnd-desc";
+    arrow = isDesc ? "🔀↓" : "🔀↑";
+    const rest = Array.from(Uint8Array.of(1, 2, 3, 4)).sort(() => Math.random() - 0.5);
+    const perm = [0, ...rest];
+    pcs = perm.map(i => pcs.at(i));
+    deg = perm.map(i => deg.at(i));
+    names = perm.map(i => names.at(i));
+  } else if(d === "desc"){
+    arrow = "↓";
+    pcs = [pcs.at(0), ...pcs.slice(1).reverse()];
+    deg = [deg.at(0), ...deg.slice(1).reverse()];
+    names = [names.at(0), ...names.slice(1).reverse()];
+  }
+  q.pcs = pcs;
+  q.deg = deg;
+  q.names = names;
+  q.arrow = arrow;
+}
+
 function makeDeck(){
   const m = mode.value, o = ord.value, d = dir.value;
   let steps = Array.from({length: 12}, (_, i) => i);
   if(o === "4th") steps = [0, ...steps.slice(1).reverse()];
-  deck = [];
+  deck = new Array();
 
   function spellNote(pc, sVal){
     if(sVal === 6) return `${SHARPS[pc]}/${FLATS[pc]}`;
@@ -89,16 +115,12 @@ function makeDeck(){
   }
 
   const pushScale = (t, sig, sVal, rootPc, rootName, intervals, degrees) => {
-    const desc = d === "desc" || (d === "mix" && Math.random() < 0.5);
-    let pcs = Array.from(intervals, i => (rootPc + i) % 12);
-    let deg = [...degrees];
-    let names = Array.from(intervals, i => spellNote((rootPc + i) % 12, sVal));
-    if(desc){
-      pcs = [pcs[0], ...pcs.slice(1).reverse()];
-      deg = [deg[0], ...deg.slice(1).reverse()];
-      names = [names[0], ...names.slice(1).reverse()];
-    }
-    deck.push({t, sig, pc: rootPc, root: rootName, pcs, deg, names, desc});
+    const basePcs = Array.from(intervals, i => (rootPc + i) % 12);
+    const baseDeg = [...degrees];
+    const baseNames = Array.from(intervals, i => spellNote((rootPc + i) % 12, sVal));
+    const q = {t, sig, pc: rootPc, root: rootName, basePcs, baseDeg, baseNames};
+    applyOrder(q, d);
+    deck.push(q);
   };
 
   steps.forEach(s => {
@@ -113,9 +135,9 @@ function makeDeck(){
 }
 
 function load(){
-  const q = deck[idx]; step = 0; lock = 0; clean = 1;
+  const q = deck.at(idx); step = 0; lock = 0; clean = 1;
   tag.textContent = q.sig;
-  title.textContent = `${q.root} ${q.t} ${q.desc ? "↓" : "↑"}`;
+  title.textContent = `${q.root} ${q.t} ${q.arrow}`;
   clearKeys(); drawSlots(); drawStat();
 }
 
@@ -124,15 +146,15 @@ function clearKeys(){
 }
 
 function drawSlots(){
-  const q = deck[idx];
-  slots.innerHTML = q.deg.map((d, i) => `<div class="slot ${i < step ? 'ok' : ''}"><small>${d}</small><span>${i < step ? q.names[i] : '—'}</span></div>`).join("");
+  const q = deck.at(idx);
+  slots.innerHTML = q.deg.map((d, i) => `<div class="slot ${i < step ? 'ok' : ''}"><small>${d}</small><span>${i < step ? q.names.at(i) : '—'}</span></div>`).join("");
 }
 
 function press(midi){
   if(lock) return;
-  const q = deck[idx], pc = midi % 12, k = document.querySelector(`[data-m="${midi}"]`);
+  const q = deck.at(idx), pc = midi % 12, k = document.querySelector(`[data-m="${midi}"]`);
 
-  if(pc === q.pcs[step]){
+  if(pc === q.pcs.at(step)){
     k?.classList.add("ok");
     step++;
     drawSlots();
@@ -140,7 +162,11 @@ function press(midi){
       lock = 1; tries++;
       if(clean){ streak++; hits++; }
       drawStat();
-      setTimeout(() => { idx = (idx + 1) % deck.length; load(); }, 450);
+      setTimeout(() => {
+        if(dir.value.startsWith("rnd")) applyOrder(q, dir.value);
+        idx = (idx + 1) % deck.length;
+        load();
+      }, 450);
     }
   } else {
     lock = 1; clean = 0; streak = 0;
@@ -157,19 +183,36 @@ function press(midi){
 function reveal(){
   if(lock) return;
   lock = 1; tries++; streak = 0;
-  const q = deck[idx], el = slots.children;
+  const q = deck.at(idx), el = slots.children;
   clearKeys();
-  let m = q.desc ? (72 + q.pcs[0]) : (60 + q.pcs[0]);
-  if(m > 83) m -= 12;
-  q.pcs.forEach((pc, i) => {
-    if(q.desc){
-      while(m % 12 !== pc) m--;
-    } else {
-      while(m % 12 !== pc) m++;
-    }
-    el[i].className = "slot ok"; el[i].lastChild.textContent = q.names[i];
-    document.querySelector(`[data-m="${m}"]`)?.classList.add("ok");
-  });
+  const isDesc = q.arrow.includes("↓");
+  const rootMidi = isDesc ? (72 + q.pcs.at(0) > 83 ? 60 + q.pcs.at(0) : 72 + q.pcs.at(0)) : (60 + q.pcs.at(0));
+
+  if(q.arrow.startsWith("🔀")){
+    q.pcs.forEach((pc, i) => {
+      let m = rootMidi;
+      if(i > 0){
+        if(isDesc){
+          while(m % 12 !== pc) m--;
+        } else {
+          while(m % 12 !== pc) m++;
+        }
+      }
+      el[i].className = "slot ok"; el[i].lastChild.textContent = q.names.at(i);
+      document.querySelector(`[data-m="${m}"]`)?.classList.add("ok");
+    });
+  } else {
+    let m = rootMidi;
+    q.pcs.forEach((pc, i) => {
+      if(isDesc){
+        while(m % 12 !== pc) m--;
+      } else {
+        while(m % 12 !== pc) m++;
+      }
+      el[i].className = "slot ok"; el[i].lastChild.textContent = q.names.at(i);
+      document.querySelector(`[data-m="${m}"]`)?.classList.add("ok");
+    });
+  }
   drawStat();
 }
 
@@ -180,7 +223,7 @@ function drawStat(){
 let wCount = 0, kbd = {};
 for(let o = 0; o < 2; o++) NOTES.forEach((isB, pc) => {
   const m = 60 + o * 12 + pc, d = document.createElement("div"),
-        kChar = o === 0 ? KEYS[pc] : (o === 1 && pc === 0 ? "K" : "");
+        kChar = o === 0 ? KEYS.at(pc) : (o === 1 && pc === 0 ? "K" : "");
   d.dataset.m = m; d.className = isB ? "b" : "w";
   if(isB) d.style.left = `calc(4px + (100% - 8px) * ${wCount / 14})`; else wCount++;
   d.onpointerdown = (e) => { e.preventDefault(); press(m); };
